@@ -25,12 +25,16 @@ else()
       "Could not determine RAPIDS version. Contents of VERSION file:\n${_rapids_version_formatted}"
   )
 endif()
-
-if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/CUDF_RAPIDS-${RAPIDS_VERSION_MAJOR_MINOR}.cmake")
-  file(
-    DOWNLOAD
-    "https://raw.githubusercontent.com/rapidsai/rapids-cmake/branch-${RAPIDS_VERSION_MAJOR_MINOR}/RAPIDS.cmake"
-    "${CMAKE_CURRENT_BINARY_DIR}/CUDF_RAPIDS-${RAPIDS_VERSION_MAJOR_MINOR}.cmake"
-  )
-endif()
+message("CMAKE_SOURCE_DIR: ${CMAKE_SOURCE_DIR}")
+message("CMAKE_CURRENT_BINARY_DIR: ${CMAKE_CURRENT_BINARY_DIR}")
+message("RAPIDS_VERSION_MAJOR_MINOR: ${RAPIDS_VERSION_MAJOR_MINOR}")
+# TODO 离线CUDF_RAPIDS cmake
+file(COPY "${CMAKE_SOURCE_DIR}/offline_data/CUDF_RAPIDS-${RAPIDS_VERSION_MAJOR_MINOR}.cmake" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/")
+#if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/CUDF_RAPIDS-${RAPIDS_VERSION_MAJOR_MINOR}.cmake")
+#  file(
+#    DOWNLOAD
+#    "https://raw.githubusercontent.com/rapidsai/rapids-cmake/branch-${RAPIDS_VERSION_MAJOR_MINOR}/RAPIDS.cmake"
+#    "${CMAKE_CURRENT_BINARY_DIR}/CUDF_RAPIDS-${RAPIDS_VERSION_MAJOR_MINOR}.cmake"
+#  )
+#endif()
 include("${CMAKE_CURRENT_BINARY_DIR}/CUDF_RAPIDS-${RAPIDS_VERSION_MAJOR_MINOR}.cmake")

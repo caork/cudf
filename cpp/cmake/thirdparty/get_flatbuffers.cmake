@@ -19,7 +19,7 @@ function(find_and_configure_flatbuffers VERSION)
     flatbuffers ${VERSION}
     GLOBAL_TARGETS flatbuffers
     CPM_ARGS
-    GIT_REPOSITORY https://github.com/google/flatbuffers.git
+    GIT_REPOSITORY https://gitee.com/wangda11/flatbuffers
     GIT_TAG v${VERSION}
     GIT_SHALLOW TRUE
   )

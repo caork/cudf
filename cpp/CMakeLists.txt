@@ -11,7 +11,8 @@
 # or implied. See the License for the specific language governing permissions and limitations under
 # the License.
 # =============================================================================
-
+SET(CMAKE_INSTALL_PREFIX /home/asus/github/cudf_build)
+set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
 cmake_minimum_required(VERSION 3.26.4 FATAL_ERROR)
 
 include(../rapids_config.cmake)

@@ -1,5 +1,5 @@
 # <div align="left"><img src="img/rapids_logo.png" width="90px"/>&nbsp;cuDF - GPU DataFrames</div>
-
+> an edited version for Chinese mainland, forked from 24.12.00
 ## 📢 cuDF can now be used as a no-code-change accelerator for pandas! To learn more, see [here](https://rapids.ai/cudf-pandas/)!
 
 cuDF (pronounced "KOO-dee-eff") is a GPU DataFrame library

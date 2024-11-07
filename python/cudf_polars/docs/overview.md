@@ -212,11 +212,7 @@ methods.
 
 Plan node definitions live in `cudf_polars/dsl/ir.py`, these all
 inherit from the base `IR` node. The evaluation of a plan node is done
-by implementing the `do_evaluate` method. This method takes in
-the non-child arguments specified in `_non_child_args`, followed by
-pre-evaluated child nodes (`DataFrame` objects). To perform the
-evaluation, one should use the base class (generic) `evaluate` method
-which handles the recursive evaluation of child nodes.
+by implementing the `evaluate` method.
 
 To translate the plan node, add a case handler in `translate_ir` that
 lives in `cudf_polars/dsl/translate.py`.

@@ -79,13 +79,13 @@ function(find_and_configure_arrow VERSION BUILD_STATIC EXCLUDE_FROM_ALL ENABLE_P
     list(APPEND ARROW_PARQUET_OPTIONS "Thrift_SOURCE BUNDLED")
     list(APPEND ARROW_PARQUET_OPTIONS "ARROW_DEPENDENCY_SOURCE AUTO")
   endif()
-
+  # TODO 修改為内源地址
   rapids_cpm_find(
     Arrow ${VERSION}
     GLOBAL_TARGETS arrow_shared parquet_shared arrow_acero_shared arrow_dataset_shared arrow_static
                    parquet_static arrow_acero_static arrow_dataset_static
     CPM_ARGS
-    GIT_REPOSITORY https://github.com/apache/arrow.git
+    GIT_REPOSITORY https://gitee.com/kumo-pub/arrow.git
     GIT_TAG apache-arrow-${VERSION}
     GIT_SHALLOW TRUE SOURCE_SUBDIR cpp
     EXCLUDE_FROM_ALL ${EXCLUDE_FROM_ALL}

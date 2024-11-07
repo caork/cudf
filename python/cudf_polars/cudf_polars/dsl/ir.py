@@ -127,12 +127,9 @@ def broadcast(*columns: Column, target_length: int | None = None) -> list[Column
 class IR(Node["IR"]):
     """Abstract plan node, representing an unevaluated dataframe."""
 
-    __slots__ = ("schema", "_non_child_args")
+    __slots__ = ("schema",)
     # This annotation is needed because of https://github.com/python/mypy/issues/17981
     _non_child: ClassVar[tuple[str, ...]] = ("schema",)
-    # Concrete classes should set this up with the arguments that will
-    # be passed to do_evaluate.
-    _non_child_args: tuple[Any, ...]
     schema: Schema
     """Mapping from column names to their data types."""
 
@@ -149,37 +146,9 @@ class IR(Node["IR"]):
         schema_hash = tuple(self.schema.items())
         return (type(self), schema_hash, args)
 
-    # Hacky to avoid type-checking issues, just advertise the
-    # signature. Both mypy and pyright complain if we have an abstract
-    # method that takes arbitrary *args, but the subclasses have
-    # tighter signatures. This complaint is correct because the
-    # subclass is not Liskov-substitutable for the superclass.
-    # However, we know do_evaluate will only be called with the
-    # correct arguments by "construction".
-    do_evaluate: Callable[..., DataFrame]
-    """
-    Evaluate the node (given its evaluated children), and return a dataframe.
-
-    Parameters
-    ----------
-    args
-        Non child arguments followed by any evaluated dataframe inputs.
-
-    Returns
-    -------
-    DataFrame (on device) representing the evaluation of this plan
-    node.
-
-    Raises
-    ------
-    NotImplementedError
-        If evaluation fails. Ideally this should not occur, since the
-        translation phase should fail earlier.
-    """
-
     def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """
-        Evaluate the node (recursively) and return a dataframe.
+        Evaluate the node and return a dataframe.
 
         Parameters
         ----------
@@ -187,27 +156,21 @@ class IR(Node["IR"]):
             Mapping from cached node ids to constructed DataFrames.
             Used to implement evaluation of the `Cache` node.
 
-        Notes
-        -----
-        Prefer not to override this method. Instead implement
-        :meth:`do_evaluate` which doesn't encode a recursion scheme
-        and just assumes already evaluated inputs.
-
         Returns
         -------
         DataFrame (on device) representing the evaluation of this plan
-        node (and its children).
+        node.
 
         Raises
         ------
         NotImplementedError
-            If evaluation fails. Ideally this should not occur, since the
-            translation phase should fail earlier.
+            If we couldn't evaluate things. Ideally this should not occur,
+            since the translation phase should pick up things that we
+            cannot handle.
         """
-        return self.do_evaluate(
-            *self._non_child_args,
-            *(child.evaluate(cache=cache) for child in self.children),
-        )
+        raise NotImplementedError(
+            f"Evaluation of plan {type(self).__name__}"
+        )  # pragma: no cover
 
 
 class PythonScan(IR):
@@ -224,7 +187,6 @@ class PythonScan(IR):
         self.schema = schema
         self.options = options
         self.predicate = predicate
-        self._non_child_args = (schema, options, predicate)
         self.children = ()
         raise NotImplementedError("PythonScan not implemented")
 
@@ -297,17 +259,6 @@ class Scan(IR):
         self.n_rows = n_rows
         self.row_index = row_index
         self.predicate = predicate
-        self._non_child_args = (
-            schema,
-            typ,
-            reader_options,
-            paths,
-            with_columns,
-            skip_rows,
-            n_rows,
-            row_index,
-            predicate,
-        )
         self.children = ()
         if self.typ not in ("csv", "parquet", "ndjson"):  # pragma: no cover
             # This line is unhittable ATM since IPC/Anonymous scan raise
@@ -390,28 +341,19 @@ class Scan(IR):
             self.predicate,
         )
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        schema: Schema,
-        typ: str,
-        reader_options: dict[str, Any],
-        paths: list[str],
-        with_columns: list[str] | None,
-        skip_rows: int,
-        n_rows: int,
-        row_index: tuple[str, int] | None,
-        predicate: expr.NamedExpr | None,
-    ):
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        if typ == "csv":
-            parse_options = reader_options["parse_options"]
+        with_columns = self.with_columns
+        row_index = self.row_index
+        n_rows = self.n_rows
+        if self.typ == "csv":
+            parse_options = self.reader_options["parse_options"]
             sep = chr(parse_options["separator"])
             quote = chr(parse_options["quote_char"])
             eol = chr(parse_options["eol_char"])
-            if reader_options["schema"] is not None:
+            if self.reader_options["schema"] is not None:
                 # Reader schema provides names
-                column_names = list(reader_options["schema"]["fields"].keys())
+                column_names = list(self.reader_options["schema"]["fields"].keys())
             else:
                 # file provides column names
                 column_names = None
@@ -438,8 +380,8 @@ class Scan(IR):
             # polars skips blank lines at the beginning of the file
             pieces = []
             read_partial = n_rows != -1
-            for p in paths:
-                skiprows = reader_options["skip_rows"]
+            for p in self.paths:
+                skiprows = self.reader_options["skip_rows"]
                 path = Path(p)
                 with path.open() as f:
                     while f.readline() == "\n":
@@ -458,7 +400,7 @@ class Scan(IR):
                     skiprows=skiprows,
                     comment=comment,
                     decimal=decimal,
-                    dtypes=schema,
+                    dtypes=self.schema,
                     nrows=n_rows,
                 )
                 pieces.append(tbl_w_meta)
@@ -477,17 +419,17 @@ class Scan(IR):
                 plc.concatenate.concatenate(list(tables)),
                 colnames[0],
             )
-        elif typ == "parquet":
+        elif self.typ == "parquet":
             filters = None
-            if predicate is not None and row_index is None:
+            if self.predicate is not None and self.row_index is None:
                 # Can't apply filters during read if we have a row index.
-                filters = to_parquet_filter(predicate.value)
+                filters = to_parquet_filter(self.predicate.value)
             tbl_w_meta = plc.io.parquet.read_parquet(
-                plc.io.SourceInfo(paths),
+                plc.io.SourceInfo(self.paths),
                 columns=with_columns,
                 filters=filters,
                 nrows=n_rows,
-                skip_rows=skip_rows,
+                skip_rows=self.skip_rows,
             )
             df = DataFrame.from_table(
                 tbl_w_meta.tbl,
@@ -497,12 +439,12 @@ class Scan(IR):
             if filters is not None:
                 # Mask must have been applied.
                 return df
-        elif typ == "ndjson":
+        elif self.typ == "ndjson":
             json_schema: list[tuple[str, str, list]] = [
-                (name, typ, []) for name, typ in schema.items()
+                (name, typ, []) for name, typ in self.schema.items()
             ]
             plc_tbl_w_meta = plc.io.json.read_json(
-                plc.io.SourceInfo(paths),
+                plc.io.SourceInfo(self.paths),
                 lines=True,
                 dtypes=json_schema,
                 prune_columns=True,
@@ -512,17 +454,20 @@ class Scan(IR):
             df = DataFrame.from_table(
                 plc_tbl_w_meta.tbl, plc_tbl_w_meta.column_names(include_children=False)
             )
-            col_order = list(schema.keys())
-            if row_index is not None:
+            col_order = list(self.schema.keys())
+            # TODO: remove condition when dropping support for polars 1.0
+            # https://github.com/pola-rs/polars/pull/17363
+            if row_index is not None and row_index[0] in self.schema:
                 col_order.remove(row_index[0])
-            df = df.select(col_order)
+            if col_order is not None:
+                df = df.select(col_order)
         else:
             raise NotImplementedError(
-                f"Unhandled scan type: {typ}"
+                f"Unhandled scan type: {self.typ}"
             )  # pragma: no cover; post init trips first
         if row_index is not None:
             name, offset = row_index
-            dtype = schema[name]
+            dtype = self.schema[name]
             step = plc.interop.from_arrow(
                 pa.scalar(1, type=plc.interop.to_arrow(dtype))
             )
@@ -537,11 +482,13 @@ class Scan(IR):
                 name=name,
             )
             df = DataFrame([index, *df.columns])
-        assert all(c.obj.type() == schema[name] for name, c in df.column_map.items())
-        if predicate is None:
+        assert all(
+            c.obj.type() == self.schema[name] for name, c in df.column_map.items()
+        )
+        if self.predicate is None:
             return df
         else:
-            (mask,) = broadcast(predicate.evaluate(df), target_length=df.num_rows)
+            (mask,) = broadcast(self.predicate.evaluate(df), target_length=df.num_rows)
             return df.filter(mask)
 
 
@@ -561,21 +508,9 @@ class Cache(IR):
         self.schema = schema
         self.key = key
         self.children = (value,)
-        self._non_child_args = (key,)
-
-    @classmethod
-    def do_evaluate(
-        cls, key: int, df: DataFrame
-    ) -> DataFrame:  # pragma: no cover; basic evaluation never calls this
-        """Evaluate and return a dataframe."""
-        # Our value has already been computed for us, so let's just
-        # return it.
-        return df
 
     def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        # We must override the recursion scheme because we don't want
-        # to recurse if we're in the cache.
         try:
             return cache[self.key]
         except KeyError:
@@ -610,7 +545,6 @@ class DataFrameScan(IR):
         self.df = df
         self.projection = tuple(projection) if projection is not None else None
         self.predicate = predicate
-        self._non_child_args = (schema, df, self.projection, predicate)
         self.children = ()
 
     def get_hashable(self) -> Hashable:
@@ -623,25 +557,18 @@ class DataFrameScan(IR):
         schema_hash = tuple(self.schema.items())
         return (type(self), schema_hash, id(self.df), self.projection, self.predicate)
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        schema: Schema,
-        df: Any,
-        projection: tuple[str, ...] | None,
-        predicate: expr.NamedExpr | None,
-    ) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        pdf = pl.DataFrame._from_pydf(df)
-        if projection is not None:
-            pdf = pdf.select(projection)
+        pdf = pl.DataFrame._from_pydf(self.df)
+        if self.projection is not None:
+            pdf = pdf.select(self.projection)
         df = DataFrame.from_polars(pdf)
         assert all(
             c.obj.type() == dtype
-            for c, dtype in zip(df.columns, schema.values(), strict=True)
+            for c, dtype in zip(df.columns, self.schema.values(), strict=True)
         )
-        if predicate is not None:
-            (mask,) = broadcast(predicate.evaluate(df), target_length=df.num_rows)
+        if self.predicate is not None:
+            (mask,) = broadcast(self.predicate.evaluate(df), target_length=df.num_rows)
             return df.filter(mask)
         else:
             return df
@@ -668,19 +595,14 @@ class Select(IR):
         self.exprs = tuple(exprs)
         self.should_broadcast = should_broadcast
         self.children = (df,)
-        self._non_child_args = (self.exprs, should_broadcast)
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        exprs: tuple[expr.NamedExpr, ...],
-        should_broadcast: bool,  # noqa: FBT001
-        df: DataFrame,
-    ) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
         # Handle any broadcasting
-        columns = [e.evaluate(df) for e in exprs]
-        if should_broadcast:
+        columns = [e.evaluate(df) for e in self.exprs]
+        if self.should_broadcast:
             columns = broadcast(*columns)
         return DataFrame(columns)
 
@@ -703,14 +625,14 @@ class Reduce(IR):
         self.schema = schema
         self.exprs = tuple(exprs)
         self.children = (df,)
-        self._non_child_args = (self.exprs,)
 
-    @classmethod
-    def do_evaluate(
-        cls, exprs: tuple[expr.NamedExpr, ...], df: DataFrame
-    ) -> DataFrame:  # pragma: no cover; not exposed by polars yet
+    def evaluate(
+        self, *, cache: MutableMapping[int, DataFrame]
+    ) -> DataFrame:  # pragma: no cover; polars doesn't emit this node yet
         """Evaluate and return a dataframe."""
-        columns = broadcast(*(e.evaluate(df) for e in exprs))
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
+        columns = broadcast(*(e.evaluate(df) for e in self.exprs))
         assert all(column.obj.size() == 1 for column in columns)
         return DataFrame(columns)
 
@@ -759,13 +681,6 @@ class GroupBy(IR):
         if any(GroupBy.check_agg(a.value) > 1 for a in self.agg_requests):
             raise NotImplementedError("Nested aggregations in groupby")
         self.agg_infos = [req.collect_agg(depth=0) for req in self.agg_requests]
-        self._non_child_args = (
-            self.keys,
-            self.agg_requests,
-            maintain_order,
-            options,
-            self.agg_infos,
-        )
 
     @staticmethod
     def check_agg(agg: expr.Expr) -> int:
@@ -795,18 +710,13 @@ class GroupBy(IR):
         else:
             raise NotImplementedError(f"No handler for {agg=}")
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        keys_in: Sequence[expr.NamedExpr],
-        agg_requests: Sequence[expr.NamedExpr],
-        maintain_order: bool,  # noqa: FBT001
-        options: Any,
-        agg_infos: Sequence[expr.AggInfo],
-        df: DataFrame,
-    ):
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        keys = broadcast(*(k.evaluate(df) for k in keys_in), target_length=df.num_rows)
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
+        keys = broadcast(
+            *(k.evaluate(df) for k in self.keys), target_length=df.num_rows
+        )
         sorted = (
             plc.types.Sorted.YES
             if all(k.is_sorted for k in keys)
@@ -822,7 +732,7 @@ class GroupBy(IR):
         # TODO: uniquify
         requests = []
         replacements: list[expr.Expr] = []
-        for info in agg_infos:
+        for info in self.agg_infos:
             for pre_eval, req, rep in info.requests:
                 if pre_eval is None:
                     # A count aggregation, doesn't touch the column,
@@ -844,10 +754,12 @@ class GroupBy(IR):
             for key, grouped_key in zip(keys, group_keys.columns(), strict=True)
         ]
         result_subs = DataFrame(raw_columns)
-        results = [req.evaluate(result_subs, mapping=mapping) for req in agg_requests]
+        results = [
+            req.evaluate(result_subs, mapping=mapping) for req in self.agg_requests
+        ]
         broadcasted = broadcast(*result_keys, *results)
         # Handle order preservation of groups
-        if maintain_order and not sorted:
+        if self.maintain_order and not sorted:
             # The order we want
             want = plc.stream_compaction.stable_distinct(
                 plc.Table([k.obj for k in keys]),
@@ -887,7 +799,7 @@ class GroupBy(IR):
                     ordered_table.columns(), broadcasted, strict=True
                 )
             ]
-        return DataFrame(broadcasted).slice(options.slice)
+        return DataFrame(broadcasted).slice(self.options.slice)
 
 
 class Join(IR):
@@ -929,7 +841,6 @@ class Join(IR):
         self.right_on = tuple(right_on)
         self.options = options
         self.children = (left, right)
-        self._non_child_args = (self.left_on, self.right_on, self.options)
         if any(
             isinstance(e.value, expr.Literal)
             for e in itertools.chain(self.left_on, self.right_on)
@@ -975,8 +886,8 @@ class Join(IR):
             )
         assert_never(how)
 
-    @staticmethod
     def _reorder_maps(
+        self,
         left_rows: int,
         lg: plc.Column,
         left_policy: plc.copying.OutOfBoundsPolicy,
@@ -1028,23 +939,10 @@ class Join(IR):
             [plc.types.NullOrder.AFTER, plc.types.NullOrder.AFTER],
         ).columns()
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        left_on_exprs: Sequence[expr.NamedExpr],
-        right_on_exprs: Sequence[expr.NamedExpr],
-        options: tuple[
-            Literal["inner", "left", "right", "full", "semi", "anti", "cross"],
-            bool,
-            tuple[int, int] | None,
-            str,
-            bool,
-        ],
-        left: DataFrame,
-        right: DataFrame,
-    ) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        how, join_nulls, zlice, suffix, coalesce = options
+        left, right = (c.evaluate(cache=cache) for c in self.children)
+        how, join_nulls, zlice, suffix, coalesce = self.options
         if how == "cross":
             # Separate implementation, since cross_join returns the
             # result, not the gather maps
@@ -1068,14 +966,14 @@ class Join(IR):
             ]
             return DataFrame([*left_cols, *right_cols]).slice(zlice)
         # TODO: Waiting on clarity based on https://github.com/pola-rs/polars/issues/17184
-        left_on = DataFrame(broadcast(*(e.evaluate(left) for e in left_on_exprs)))
-        right_on = DataFrame(broadcast(*(e.evaluate(right) for e in right_on_exprs)))
+        left_on = DataFrame(broadcast(*(e.evaluate(left) for e in self.left_on)))
+        right_on = DataFrame(broadcast(*(e.evaluate(right) for e in self.right_on)))
         null_equality = (
             plc.types.NullEquality.EQUAL
             if join_nulls
             else plc.types.NullEquality.UNEQUAL
         )
-        join_fn, left_policy, right_policy = cls._joiners(how)
+        join_fn, left_policy, right_policy = Join._joiners(how)
         if right_policy is None:
             # Semi join
             lg = join_fn(left_on.table, right_on.table, null_equality)
@@ -1089,7 +987,7 @@ class Join(IR):
             lg, rg = join_fn(left_on.table, right_on.table, null_equality)
             if how == "left" or how == "right":
                 # Order of left table is preserved
-                lg, rg = cls._reorder_maps(
+                lg, rg = self._reorder_maps(
                     left.num_rows, lg, left_policy, right.num_rows, rg, right_policy
                 )
             if coalesce and how == "inner":
@@ -1148,19 +1046,14 @@ class HStack(IR):
         self.schema = schema
         self.columns = tuple(columns)
         self.should_broadcast = should_broadcast
-        self._non_child_args = (self.columns, self.should_broadcast)
         self.children = (df,)
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        exprs: Sequence[expr.NamedExpr],
-        should_broadcast: bool,  # noqa: FBT001
-        df: DataFrame,
-    ) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        columns = [c.evaluate(df) for c in exprs]
-        if should_broadcast:
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
+        columns = [c.evaluate(df) for c in self.columns]
+        if self.should_broadcast:
             columns = broadcast(*columns, target_length=df.num_rows)
         else:
             # Polars ensures this is true, but let's make sure nothing
@@ -1170,7 +1063,7 @@ class HStack(IR):
             # table that might have mismatching column lengths will
             # never be turned into a pylibcudf Table with all columns
             # by the Select, which is why this is safe.
-            assert all(e.name.startswith("__POLARS_CSER_0x") for e in exprs)
+            assert all(e.name.startswith("__POLARS_CSER_0x") for e in self.columns)
         return df.with_columns(columns)
 
 
@@ -1203,7 +1096,6 @@ class Distinct(IR):
         self.subset = subset
         self.zlice = zlice
         self.stable = stable
-        self._non_child_args = (keep, subset, zlice, stable)
         self.children = (df,)
 
     _KEEP_MAP: ClassVar[dict[str, plc.stream_compaction.DuplicateKeepOption]] = {
@@ -1213,39 +1105,33 @@ class Distinct(IR):
         "any": plc.stream_compaction.DuplicateKeepOption.KEEP_ANY,
     }
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        keep: plc.stream_compaction.DuplicateKeepOption,
-        subset: frozenset[str] | None,
-        zlice: tuple[int, int] | None,
-        stable: bool,  # noqa: FBT001
-        df: DataFrame,
-    ):
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        if subset is None:
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
+        if self.subset is None:
             indices = list(range(df.num_columns))
             keys_sorted = all(c.is_sorted for c in df.column_map.values())
         else:
-            indices = [i for i, k in enumerate(df.column_names) if k in subset]
-            keys_sorted = all(df.column_map[name].is_sorted for name in subset)
+            indices = [i for i, k in enumerate(df.column_names) if k in self.subset]
+            keys_sorted = all(df.column_map[name].is_sorted for name in self.subset)
         if keys_sorted:
             table = plc.stream_compaction.unique(
                 df.table,
                 indices,
-                keep,
+                self.keep,
                 plc.types.NullEquality.EQUAL,
             )
         else:
             distinct = (
                 plc.stream_compaction.stable_distinct
-                if stable
+                if self.stable
                 else plc.stream_compaction.distinct
             )
             table = distinct(
                 df.table,
                 indices,
-                keep,
+                self.keep,
                 plc.types.NullEquality.EQUAL,
                 plc.types.NanEquality.ALL_EQUAL,
             )
@@ -1256,9 +1142,9 @@ class Distinct(IR):
                 for new, old in zip(table.columns(), df.columns, strict=True)
             ]
         )
-        if keys_sorted or stable:
+        if keys_sorted or self.stable:
             result = result.sorted_like(df)
-        return result.slice(zlice)
+        return result.slice(self.zlice)
 
 
 class Sort(IR):
@@ -1293,39 +1179,29 @@ class Sort(IR):
         self.null_order = tuple(null_order)
         self.stable = stable
         self.zlice = zlice
-        self._non_child_args = (
-            self.by,
-            self.order,
-            self.null_order,
-            self.stable,
-            self.zlice,
-        )
         self.children = (df,)
 
-    @classmethod
-    def do_evaluate(
-        cls,
-        by: Sequence[expr.NamedExpr],
-        order: Sequence[plc.types.Order],
-        null_order: Sequence[plc.types.NullOrder],
-        stable: bool,  # noqa: FBT001
-        zlice: tuple[int, int] | None,
-        df: DataFrame,
-    ) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        sort_keys = broadcast(*(k.evaluate(df) for k in by), target_length=df.num_rows)
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
+        sort_keys = broadcast(
+            *(k.evaluate(df) for k in self.by), target_length=df.num_rows
+        )
         # TODO: More robust identification here.
         keys_in_result = {
             k.name: i
             for i, k in enumerate(sort_keys)
             if k.name in df.column_map and k.obj is df.column_map[k.name].obj
         }
-        do_sort = plc.sorting.stable_sort_by_key if stable else plc.sorting.sort_by_key
+        do_sort = (
+            plc.sorting.stable_sort_by_key if self.stable else plc.sorting.sort_by_key
+        )
         table = do_sort(
             df.table,
             plc.Table([k.obj for k in sort_keys]),
-            list(order),
-            list(null_order),
+            list(self.order),
+            list(self.null_order),
         )
         columns: list[Column] = []
         for name, c in zip(df.column_map, table.columns(), strict=True):
@@ -1335,11 +1211,11 @@ class Sort(IR):
                 i = keys_in_result[name]
                 column = column.set_sorted(
                     is_sorted=plc.types.Sorted.YES,
-                    order=order[i],
-                    null_order=null_order[i],
+                    order=self.order[i],
+                    null_order=self.null_order[i],
                 )
             columns.append(column)
-        return DataFrame(columns).slice(zlice)
+        return DataFrame(columns).slice(self.zlice)
 
 
 class Slice(IR):
@@ -1356,13 +1232,13 @@ class Slice(IR):
         self.schema = schema
         self.offset = offset
         self.length = length
-        self._non_child_args = (offset, length)
         self.children = (df,)
 
-    @classmethod
-    def do_evaluate(cls, offset: int, length: int, df: DataFrame) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        return df.slice((offset, length))
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
+        return df.slice((self.offset, self.length))
 
 
 class Filter(IR):
@@ -1376,13 +1252,13 @@ class Filter(IR):
     def __init__(self, schema: Schema, mask: expr.NamedExpr, df: IR):
         self.schema = schema
         self.mask = mask
-        self._non_child_args = (mask,)
         self.children = (df,)
 
-    @classmethod
-    def do_evaluate(cls, mask_expr: expr.NamedExpr, df: DataFrame) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        (mask,) = broadcast(mask_expr.evaluate(df), target_length=df.num_rows)
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
+        (mask,) = broadcast(self.mask.evaluate(df), target_length=df.num_rows)
         return df.filter(mask)
 
 
@@ -1394,15 +1270,15 @@ class Projection(IR):
 
     def __init__(self, schema: Schema, df: IR):
         self.schema = schema
-        self._non_child_args = (schema,)
         self.children = (df,)
 
-    @classmethod
-    def do_evaluate(cls, schema: Schema, df: DataFrame) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
+        (child,) = self.children
+        df = child.evaluate(cache=cache)
         # This can reorder things.
         columns = broadcast(
-            *(df.column_map[name] for name in schema), target_length=df.num_rows
+            *(df.column_map[name] for name in self.schema), target_length=df.num_rows
         )
         return DataFrame(columns)
 
@@ -1465,41 +1341,33 @@ class MapFunction(IR):
                     "Unpivot cannot cast all input columns to "
                     f"{self.schema[value_name].id()}"
                 )
-            self.options = (
-                tuple(indices),
-                tuple(pivotees),
-                (variable_name, schema[variable_name]),
-                (value_name, schema[value_name]),
-            )
-        self._non_child_args = (name, self.options)
+            self.options = (tuple(indices), tuple(pivotees), variable_name, value_name)
 
-    @classmethod
-    def do_evaluate(cls, name: str, options: Any, df: DataFrame) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        if name == "rechunk":
+        (child,) = self.children
+        if self.name == "rechunk":
             # No-op in our data model
             # Don't think this appears in a plan tree from python
-            return df  # pragma: no cover
-        elif name == "rename":
+            return child.evaluate(cache=cache)  # pragma: no cover
+        elif self.name == "rename":
+            df = child.evaluate(cache=cache)
             # final tag is "swapping" which is useful for the
             # optimiser (it blocks some pushdown operations)
-            old, new, _ = options
+            old, new, _ = self.options
             return df.rename_columns(dict(zip(old, new, strict=True)))
-        elif name == "explode":
-            ((to_explode,),) = options
+        elif self.name == "explode":
+            df = child.evaluate(cache=cache)
+            ((to_explode,),) = self.options
             index = df.column_names.index(to_explode)
             subset = df.column_names_set - {to_explode}
             return DataFrame.from_table(
                 plc.lists.explode_outer(df.table, index), df.column_names
             ).sorted_like(df, subset=subset)
-        elif name == "unpivot":
-            (
-                indices,
-                pivotees,
-                (variable_name, variable_dtype),
-                (value_name, value_dtype),
-            ) = options
+        elif self.name == "unpivot":
+            indices, pivotees, variable_name, value_name = self.options
             npiv = len(pivotees)
+            df = child.evaluate(cache=cache)
             index_columns = [
                 Column(col, name=name)
                 for col, name in zip(
@@ -1514,7 +1382,7 @@ class MapFunction(IR):
                         plc.interop.from_arrow(
                             pa.array(
                                 pivotees,
-                                type=plc.interop.to_arrow(variable_dtype),
+                                type=plc.interop.to_arrow(self.schema[variable_name]),
                             ),
                         )
                     ]
@@ -1522,7 +1390,10 @@ class MapFunction(IR):
                 df.num_rows,
             ).columns()
             value_column = plc.concatenate.concatenate(
-                [df.column_map[pivotee].astype(value_dtype).obj for pivotee in pivotees]
+                [
+                    df.column_map[pivotee].astype(self.schema[value_name]).obj
+                    for pivotee in pivotees
+                ]
             )
             return DataFrame(
                 [
@@ -1546,20 +1417,18 @@ class Union(IR):
     def __init__(self, schema: Schema, zlice: tuple[int, int] | None, *children: IR):
         self.schema = schema
         self.zlice = zlice
-        self._non_child_args = (zlice,)
         self.children = children
         schema = self.children[0].schema
         if not all(s.schema == schema for s in self.children[1:]):
             raise NotImplementedError("Schema mismatch")
 
-    @classmethod
-    def do_evaluate(cls, zlice: tuple[int, int] | None, *dfs: DataFrame) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
-        # TODO: only evaluate what we need if we have a slice?
+        # TODO: only evaluate what we need if we have a slice
+        dfs = [df.evaluate(cache=cache) for df in self.children]
         return DataFrame.from_table(
-            plc.concatenate.concatenate([df.table for df in dfs]),
-            dfs[0].column_names,
-        ).slice(zlice)
+            plc.concatenate.concatenate([df.table for df in dfs]), dfs[0].column_names
+        ).slice(self.zlice)
 
 
 class HConcat(IR):
@@ -1570,7 +1439,6 @@ class HConcat(IR):
 
     def __init__(self, schema: Schema, *children: IR):
         self.schema = schema
-        self._non_child_args = ()
         self.children = children
 
     @staticmethod
@@ -1601,22 +1469,18 @@ class HConcat(IR):
             ]
         )
 
-    @classmethod
-    def do_evaluate(cls, *dfs: DataFrame) -> DataFrame:
+    def evaluate(self, *, cache: MutableMapping[int, DataFrame]) -> DataFrame:
         """Evaluate and return a dataframe."""
+        dfs = [df.evaluate(cache=cache) for df in self.children]
         max_rows = max(df.num_rows for df in dfs)
         # Horizontal concatenation extends shorter tables with nulls
-        return DataFrame(
-            itertools.chain.from_iterable(
-                df.columns
-                for df in (
-                    df
-                    if df.num_rows == max_rows
-                    else DataFrame.from_table(
-                        cls._extend_with_nulls(df.table, nrows=max_rows - df.num_rows),
-                        df.column_names,
-                    )
-                    for df in dfs
-                )
+        dfs = [
+            df
+            if df.num_rows == max_rows
+            else DataFrame.from_table(
+                self._extend_with_nulls(df.table, nrows=max_rows - df.num_rows),
+                df.column_names,
             )
-        )
+            for df in dfs
+        ]
+        return DataFrame(itertools.chain.from_iterable(df.columns for df in dfs))

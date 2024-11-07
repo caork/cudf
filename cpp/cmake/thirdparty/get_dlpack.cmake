@@ -20,7 +20,7 @@ function(find_and_configure_dlpack VERSION)
 
   rapids_cpm_find(
     dlpack ${VERSION}
-    GIT_REPOSITORY https://github.com/dmlc/dlpack.git
+    GIT_REPOSITORY https://gitee.com/caork/dlpack.git
     GIT_TAG v${VERSION}
     GIT_SHALLOW TRUE
     DOWNLOAD_ONLY TRUE
