@@ -256,7 +256,8 @@ if hasArg clean; then
         rmdir ${bd} || true
     fi
     done
-
+    #TODO 新增offline data的清理
+    find ${REPODIR}/cpp/offline_data/ | grep -E "\.zip" | xargs rm -rf
     # Cleaning up python artifacts
     find ${REPODIR}/python/ | grep -E "(__pycache__|\.pyc|\.pyo|\.so|\_skbuild$)"  | xargs rm -rf
 

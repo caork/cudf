@@ -62,32 +62,34 @@ function(rapids_cpm_download)
 
       # default to the same location that cpm computes
       set(CPM_DOWNLOAD_LOCATION "${CPM_SOURCE_CACHE}/cpm/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
+      message("CPM_DOWNLOAD_LOCATION: ${CPM_DOWNLOAD_LOCATION}")
       if(EXISTS "${CPM_SOURCE_CACHE}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
         # Also support the rapids-cmake download location ( cmake/ vs cpm/ )
-        set(CPM_DOWNLOAD_LOCATION "${CPM_SOURCE_CACHE}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
+        set(CPM_DOWNLOAD_LOCATION "${CPM_SOURCE_CACHE}/cmake/")
       endif()
 
     elseif(DEFINED ENV{CPM_SOURCE_CACHE})
-
+      message("CPM_SOURCE_CACHE: "$ENV{CPM_SOURCE_CACHE}/cpm/CPM_${CPM_DOWNLOAD_VERSION}.cmake"")
       # default to the same location that cpm computes
       set(CPM_DOWNLOAD_LOCATION "$ENV{CPM_SOURCE_CACHE}/cpm/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
-      if(EXISTS "$ENV{CPM_SOURCE_CACHE}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
+      if(EXISTS "$ENV{CPM_SOURCE_CACHE}/cmake/")
         # Also support the rapids-cmake download location ( cmake/ vs cpm/ )
-        set(CPM_DOWNLOAD_LOCATION "$ENV{CPM_SOURCE_CACHE}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
+        set(CPM_DOWNLOAD_LOCATION "$ENV{CPM_SOURCE_CACHE}/cmake/")
       endif()
 
     else()
-      set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/CPM_${CPM_DOWNLOAD_VERSION}.cmake")
+      set(CPM_DOWNLOAD_LOCATION "${CMAKE_BINARY_DIR}/cmake/")
+      message("CPM_DOWNLOAD_LOCATION: ${CPM_DOWNLOAD_LOCATION}")
     endif()
   endif()
 
   if(NOT (EXISTS ${CPM_DOWNLOAD_LOCATION}))
     message(VERBOSE "Downloading CPM.cmake to ${CPM_DOWNLOAD_LOCATION}")
-    file(DOWNLOAD
-         https://github.com/cpm-cmake/CPM.cmake/releases/download/v${CPM_DOWNLOAD_VERSION}/CPM.cmake
-         ${CPM_DOWNLOAD_LOCATION} LOG download_log)
-
-    file(MD5 ${CPM_DOWNLOAD_LOCATION} cpm_hash)
+    message("COPY CPM CMAKE TO BUILD")
+    file(COPY ${CMAKE_SOURCE_DIR}/offline_data/CPM_0.40.0.cmake DESTINATION
+         ${CPM_DOWNLOAD_LOCATION})
+    file(MD5 "${CPM_DOWNLOAD_LOCATION}/CPM_0.40.0.cmake" cpm_hash)
+    set(CPM_DOWNLOAD_LOCATION "${CPM_DOWNLOAD_LOCATION}/CPM_0.40.0.cmake")
     if(NOT cpm_hash STREQUAL CPM_DOWNLOAD_MD5_HASH)
       message(FATAL_ERROR "CPM.cmake hash mismatch [got=${cpm_hash} expected=${CPM_DOWNLOAD_MD5_HASH}] to download details below\n ${download_log}"
       )

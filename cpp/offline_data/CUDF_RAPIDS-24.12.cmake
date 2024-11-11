@@ -36,8 +36,7 @@ if(NOT rapids-cmake-branch)
 endif()
 # TODO 直接定义CMAKE包位置
 execute_process (
-        COMMAND bash -c "zip -r ${CMAKE_SOURCE_DIR}/offline_data/rapids_make/rapids-cmake-branch-24.12.zip ${CMAKE_SOURCE_DIR}/offline_data/rapids_make/rapids-cmake-branch-24.12"
-        OUTPUT_VARIABLE ZIP_STATUS
+        COMMAND bash -c "cd ${CMAKE_SOURCE_DIR}/offline_data/rapids_make; zip -r rapids-cmake-branch-24.12.zip rapids-cmake-branch-24.12"
 )
 message("zip rapids cmake: ${ZIP_STATUS}")
 set(rapids-cmake-url "${CMAKE_SOURCE_DIR}/offline_data/rapids_make/rapids-cmake-branch-24.12.zip")
